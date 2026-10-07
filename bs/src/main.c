@@ -1,6 +1,6 @@
 // main.c
 // Запуск: ./bin/battleship [-c файл.cfg] [--ключ=значение ...]
-// Ключи: size, touch, again, max_moves, delay, seed, a, b, log
+// Ключи: size, touch, again, max_moves, delay, games, seed, a, b, log
 // Коды завершения: 0 ок, 1 плохие параметры, 2 не открылся файл настроек,
 // 3 не расставился флот, 4 судья нашёл нарушение, 128+N прервали сигналом N
 #define _POSIX_C_SOURCE 200809L
@@ -12,6 +12,8 @@
 #include <string.h>
 #include <unistd.h>
 
+volatile sig_atomic_t g_stop = 0;
+
 static void OnSignal(int sig) { g_stop = sig; }
 
 static int Set(Config* c, const char* k, const char* v) {
@@ -20,6 +22,7 @@ static int Set(Config* c, const char* k, const char* v) {
     else if (!strcmp(k, "again")) c->again = atoi(v);
     else if (!strcmp(k, "max_moves")) c->max_moves = atoi(v);
     else if (!strcmp(k, "delay")) c->delay = atoi(v);
+    else if (!strcmp(k, "games")) c->games = atoi(v);
     else if (!strcmp(k, "seed")) c->seed = (unsigned)strtoul(v, NULL, 10);
     else if (!strcmp(k, "a") || !strcmp(k, "b")) snprintf(c->strat[k[0] - 'a'], 8, "%s", v);
     else if (!strcmp(k, "log")) snprintf(c->log, sizeof(c->log), "%s", v);
@@ -49,7 +52,7 @@ static int LoadFile(Config* c, const char* path) {
 }
 
 int main(int argc, char** argv) {
-    Config c = {10, 0, 1, 0, 100, (unsigned)getpid(), {"hunt", "random"}, "battleship.log"};
+    Config c = {10, 0, 1, 0, 100, 1, (unsigned)getpid(), {"hunt", "random"}, "battleship.log"};
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) {
             if (LoadFile(&c, argv[++i]) != 0) {
@@ -71,10 +74,15 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    int human = 0;
+    for (int i = 0; i < 2; i++) {
+        if (!strcmp(c.strat[i], "human")) human = 1;
+        else if (strcmp(c.strat[i], "random") && strcmp(c.strat[i], "hunt")) human = -100;
+    }
     if (c.size < 8 || c.size > MAXN || (c.touch | 1) != 1 || (c.again | 1) != 1 || c.delay < 0 || c.max_moves < 0 ||
-        (strcmp(c.strat[0], "random") && strcmp(c.strat[0], "hunt")) ||
-        (strcmp(c.strat[1], "random") && strcmp(c.strat[1], "hunt"))) {
-        dprintf(2, "неправильные значения параметров (size 8..%d, touch/again 0 или 1, a/b random или hunt)\n", MAXN);
+        c.games < 1 || c.games > 100000 || human < 0 || (human && c.games > 1)) {
+        dprintf(2, "неправильные значения параметров (size 8..%d, touch/again 0 или 1, games 1..100000,\n"
+                   "a/b: random, hunt или human, а human нельзя вместе с games>1)\n", MAXN);
         return 1;
     }
 

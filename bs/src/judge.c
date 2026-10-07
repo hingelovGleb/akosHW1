@@ -12,10 +12,11 @@
 #include <time.h>
 #include <unistd.h>
 
-volatile sig_atomic_t g_stop = 0;
 static int s_log = -1;
+static int s_quiet = 0;  // 1 - в серии боёв отдельные ходы не печатаем
 
 static void Say(const char* fmt, ...) {
+    if (s_quiet) return;
     va_list ap;
     va_start(ap, fmt);
     vdprintf(1, fmt, ap);
@@ -54,34 +55,35 @@ static void PrintBoards(const Board* b, const char names[2][32]) {
     Say("\n");
 }
 
-int Play(const Config* c) {
-    if (strcmp(c->log, "none") != 0) {
-        s_log = open(c->log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (s_log < 0) dprintf(2, "не удалось открыть журнал %s\n", c->log);
-    }
+typedef struct { int winner, moves, quit; } Outcome;  // winner -1 - никто
+
+// Один бой. first - кто ходит первым, seed - для расстановки и игроков.
+// Возвращает код завершения (0, 3, 4 или 128+сигнал)
+static int Fight(const Config* c, unsigned seed, int first, Outcome* out) {
     char names[2][32];
     snprintf(names[0], 32, "Нельсон(%s)", c->strat[0]);
     snprintf(names[1], 32, "Ушаков(%s)", c->strat[1]);
-    Say("Морской бой %dx%d, seed=%u, касание=%s, после попадания %s\n", c->size, c->size, c->seed,
-        c->touch ? "можно" : "нельзя", c->again ? "ходит ещё раз" : "ход переходит");
-
     Board bd[2];
     Player pl[2];
     for (int i = 0; i < 2; i++) {
-        uint64_t rng = ((uint64_t)c->seed * 31 + 7 + i * 1000) * 0x9E3779B97F4A7C15ull;
+        uint64_t rng = ((uint64_t)seed * 31 + 7 + i * 1000) * 0x9E3779B97F4A7C15ull;
         if (BoardPlace(&bd[i], c->size, c->touch, &rng) != 0) {
             Say("Не получилось расставить флот для %s\n", names[i]);
             return 3;
         }
-        PlayerInit(&pl[i], c, i, c->seed);
+        PlayerInit(&pl[i], c, i, seed);
     }
 
     int shots[2] = {0, 0}, hits[2] = {0, 0}, sunk[2] = {0, 0};
-    int cur = 0, moves = 0, winner = -1;
+    int cur = first, moves = 0;
+    *out = (Outcome){-1, 0, 0};
     while (!g_stop) {
         if (c->max_moves && moves >= c->max_moves) break;
         int x = 0, y = 0;
-        PlayerChoose(&pl[cur], &x, &y);
+        if (PlayerChoose(&pl[cur], &x, &y) != 0) {  // человек вышел
+            out->quit = 1;
+            break;
+        }
         Result r = BoardShoot(&bd[1 - cur], x, y);
         if (r.kind == REPEAT) {
             Say("Ошибка: %s выстрелил второй раз в %c%d\n", names[cur], 'A' + x, y + 1);
@@ -100,20 +102,59 @@ int Play(const Config* c) {
         Say("Ход %3d. %-18s -> %c%-2d %s\n", moves, names[cur], 'A' + x, y + 1,
             r.kind == MISS ? "мимо" : r.kind == HIT ? "ПОПАЛ" : "УБИЛ");
         if (bd[1 - cur].alive == 0) {
-            winner = cur;
+            out->winner = cur;
             break;
         }
         if (!(r.kind != MISS && c->again)) cur = 1 - cur;
         if (c->delay) Sleep(c->delay);
     }
+    out->moves = moves;
 
     PrintBoards(bd, names);
     if (g_stop) Say("\nБой прерван сигналом %d после %d ходов\n", (int)g_stop, moves);
-    else if (winner >= 0) Say("\nПобедил %s за %d ходов\n", names[winner], moves);
+    else if (out->quit) Say("\nИгрок вышел из боя после %d ходов\n", moves);
+    else if (out->winner >= 0) Say("\nПобедил %s за %d ходов\n", names[out->winner], moves);
     else Say("\nДостигнут лимит ходов (%d), ничья\n", moves);
     for (int i = 0; i < 2; i++)
         Say("%-18s выстрелов %3d, попаданий %3d (%.0f%%), убито кораблей %d\n", names[i], shots[i], hits[i],
             shots[i] ? 100.0 * hits[i] / shots[i] : 0.0, sunk[i]);
-    if (s_log >= 0) close(s_log);
     return g_stop ? 128 + g_stop : 0;
+}
+
+int Play(const Config* c) {
+    if (strcmp(c->log, "none") != 0) {
+        s_log = open(c->log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (s_log < 0) dprintf(2, "не удалось открыть журнал %s\n", c->log);
+    }
+    Say("Морской бой %dx%d, seed=%u, касание=%s, после попадания %s, боёв: %d\n", c->size, c->size, c->seed,
+        c->touch ? "можно" : "нельзя", c->again ? "ходит ещё раз" : "ход переходит", c->games);
+
+    Outcome o;
+    int code = 0;
+    if (c->games == 1) {
+        code = Fight(c, c->seed, 0, &o);
+    } else {
+        // Серия боёв: ходы не печатаем, считаем итоги. Первый ходящий меняется
+        int wins[2] = {0, 0}, draws = 0, played = 0;
+        long total = 0;
+        int min = 1 << 30, max = 0;
+        s_quiet = 1;
+        for (int i = 0; i < c->games && !g_stop && code == 0; i++) {
+            code = Fight(c, c->seed + i, i % 2, &o);
+            if (code != 0) break;
+            played++;
+            if (o.winner >= 0) wins[o.winner]++;
+            else draws++;
+            total += o.moves;
+            if (o.moves < min) min = o.moves;
+            if (o.moves > max) max = o.moves;
+        }
+        s_quiet = 0;
+        if (g_stop) code = 128 + g_stop;
+        Say("\nСыграно боёв: %d\n", played);
+        Say("Победы: Нельсон(%s) %d, Ушаков(%s) %d, ничьих %d\n", c->strat[0], wins[0], c->strat[1], wins[1], draws);
+        if (played) Say("Ходов за бой: в среднем %.1f, минимум %d, максимум %d\n", (double)total / played, min, max);
+    }
+    if (s_log >= 0) close(s_log);
+    return code;
 }

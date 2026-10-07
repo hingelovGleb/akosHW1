@@ -34,4 +34,22 @@ $BIN --seed=1 --delay=0 --log=/tmp/bs_test.log > /dev/null
 $BIN --seed=1 --delay=200 --log=none > /dev/null & pid=$!
 sleep 1; kill -INT $pid; wait $pid; check "Ctrl+C даёт код 130" 130 $?
 
+# человек: ввод из файла (сначала мусор и повтор, потом выход)
+$BIN --a=human --seed=2 --delay=0 --log=none < tests/data/human_quit.txt > /tmp/bs_out.txt; check "человек вышел по q" 0 $?
+grep -q "Не понял" /tmp/bs_out.txt; check "  мусор отклонён" 0 $?
+grep -q "уже стреляли" /tmp/bs_out.txt; check "  повтор отклонён" 0 $?
+grep -q "вышел из боя" /tmp/bs_out.txt; check "  сообщение о выходе" 0 $?
+$BIN --a=human --seed=2 --delay=0 --log=none < tests/data/human_all_cells.txt > /tmp/bs_out.txt; check "человек стреляет по всем клеткам" 0 $?
+grep -q "Победил" /tmp/bs_out.txt; check "  бой закончился победой" 0 $?
+$BIN --a=human --seed=2 --log=none < /dev/null > /dev/null; check "конец ввода - выход без ошибки" 0 $?
+$BIN --a=human --games=5 > /dev/null 2>&1; check "human с games>1 отклонён" 1 $?
+
+# серия боёв
+$BIN --games=100 --delay=0 --seed=1 --log=/tmp/bs_series.log > /tmp/bs_out.txt; check "серия из 100 боёв" 0 $?
+grep -q "Сыграно боёв: 100" /tmp/bs_out.txt; check "  сыграно 100" 0 $?
+grep -q "Сыграно боёв" /tmp/bs_series.log; check "  итог есть в журнале" 0 $?
+$BIN --games=0 > /dev/null 2>&1; check "games=0 отклонён" 1 $?
+$BIN --games=100000 --delay=0 --log=none > /dev/null & pid=$!
+sleep 1; kill -INT $pid; wait $pid; check "Ctrl+C во время серии" 130 $?
+
 exit $fail

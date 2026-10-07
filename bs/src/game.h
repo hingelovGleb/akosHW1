@@ -24,8 +24,9 @@ typedef struct {
     int again;      // 1 - после попадания игрок ходит ещё раз
     int max_moves;  // лимит выстрелов на двоих (0 - без лимита)
     int delay;      // пауза между ходами, мс
+    int games;      // сколько боёв сыграть подряд (больше 1 - серия)
     unsigned seed;  // с одним seed бой повторяется
-    char strat[2][8];
+    char strat[2][8];   // random, hunt или human
     char log[64];   // имя файла журнала ("none" - не писать)
 } Config;
 
@@ -42,7 +43,7 @@ typedef struct {
 
 typedef struct {
     int size, touch;
-    char strat[8];                  // random или hunt
+    char strat[8];                  // random, hunt или human
     int known[MAXN][MAXN];          // 0 не знаем, 1 промах, 2 попал, 3 убитый корабль
     uint64_t rng;
 } Player;
@@ -56,7 +57,7 @@ Result BoardShoot(Board* b, int x, int y);
 const char* BoardCheck(const Board* b);  // NULL если всё правильно
 
 void PlayerInit(Player* p, const Config* c, int id, unsigned seed);
-void PlayerChoose(Player* p, int* x, int* y);
+int PlayerChoose(Player* p, int* x, int* y);  // 0 - выбрал, -1 - человек вышел
 void PlayerOnResult(Player* p, int x, int y, const Result* r);
 
 int Play(const Config* c);  // главный цикл боя, возвращает код завершения
